@@ -135,102 +135,95 @@ voting_active = False
 votes = defaultdict(int)
 already_voted = set()
 
-# G‘alaba sharti tekshiruvi
-    win = check_win_conditions()
-    if win:
-        await message.reply(win)
-        reset_game()
-
-
 @dp.message_handler(commands=["day"])
-async def start_day(message: types.Message):
+async def start_day(message: Message):
     global voting_active, votes, already_voted
+    if not game_started:
+        await message.reply("O'yin hali boshlanmagan.")
+        return
+
     voting_active = True
     votes.clear()
     already_voted.clear()
 
-    plist = "\n".join([f"{i+1}. ID: {p}" for i, p in enumerate(players)])
-    await message.reply(f"🌞 Kunduzi bosqich boshlandi. Ovoz berish: /vote ID\n\n{plist}")
-
+    player_list = "\n".join([f"{i+1}. ID: {p}" for i, p in enumerate(players)])
+    await message.reply(f"🌞 Kunduzi bosqich boshlandi.\nQuyidagi o‘yinchilardan biriga ovoz bering:\n{player_list}\n\nOvoz berish uchun: /vote FOYDALANUVCHI_ID")
 
 @dp.message_handler(commands=["vote"])
-async def vote_handler(message: types.Message):
+async def vote_handler(message: Message):
     global voting_active
-    voter = message.from_user.id
+
     if not voting_active:
-        await message.reply("⛔ Hozir ovoz berish emas.")
+        await message.reply("⛔ Hozir ovoz berish bosqichi emas.")
         return
+
+    voter = message.from_user.id
     if voter not in players:
         await message.reply("❌ Siz o‘yinda emassiz.")
         return
+
     if voter in already_voted:
-        await message.reply("✅ Siz allaqachon ovoz berdingiz.")
+        await message.reply("✅ Siz allaqachon ovoz bergansiz.")
         return
 
     try:
-        target = int(message.get_args().strip())
+        target_id = int(message.get_args().strip())
     except:
-        await message.reply("⚠️ Format: /vote ID")
+        await message.reply("⚠️ Noto‘g‘ri format. Foydalanuvchi ID ni yozing. Masalan: /vote 123456789")
         return
 
-    if target not in players:
-        await message.reply("🚫 Bunday o‘yinchi yo‘q.")
+    if target_id not in players:
+        await message.reply("🔍 Bunday o‘yinchi topilmadi.")
         return
 
-    votes[target] += 1
+    votes[target_id] += 1
     already_voted.add(voter)
-    await message.reply(f"📥 Siz {target} foydalanuvchiga ovoz berdingiz.")
-
+    await message.reply(f"Ovoz berildi. Siz {target_id} foydalanuvchiga ovoz berdingiz.")
 
 @dp.message_handler(commands=["voteresult"])
-async def vote_result(message: types.Message):
+async def vote_result(message: Message):
     global voting_active
     if not voting_active:
-        await message.reply("⛔ Ovoz berish yo‘q.")
+        await message.reply("⛔ Ovoz berish yoqilmagan.")
         return
+
     if not votes:
-        await message.reply("🚫 Ovoz yo‘q.")
+        await message.reply("🚫 Hech kimga ovoz berilmagan.")
         return
 
-    max_vote = max(votes.values())
-    tops = [uid for uid, v in votes.items() if v == max_vote]
+    # Eng ko‘p ovoz olganini topamiz
+    max_votes = max(votes.values())
+    top_candidates = [uid for uid, count in votes.items() if count == max_votes]
 
-    if len(tops) == 1:
-        eliminated = tops[0]
+    if len(top_candidates) == 1:
+        eliminated = top_candidates[0]
         players.remove(eliminated)
-        await message.reply(f"⚖️ {eliminated} o‘ldirildi. Roli: {roles[eliminated]}")
+        role_eliminated = roles.get(eliminated, "Noma'lum")
+        await message.reply(f"⚖️ Ovoz natijasi: {eliminated} foydalanuvchi (rol: {role_eliminated}) o‘ldirildi.")
     else:
-        await message.reply("🤷‍♂️ Ovozlar teng. Hech kim chiqmadi.")
+        await message.reply("🤷‍♂️ Ovozlar teng bo‘ldi. Hech kim o‘lmadi.")
 
     voting_active = False
     votes.clear()
     already_voted.clear()
 
-    win = check_win_conditions()
-    if win:
-        await message.reply(win)
-        reset_game()
+    def check_win_conditions():
+    mafia_count = sum(1 for uid in players if roles.get(uid) in ["Mafia", "Don"])
+    civilian_count = sum(1 for uid in players if roles.get(uid) in ["Oddiy aholi", "Komissar", "Doctor"])
 
+    if mafia_count == 0:
+        return "🎉 Tinch aholi yutdi! Barcha mafiya yo‘q qilindi."
+    elif mafia_count >= civilian_count:
+        return "💀 Mafia yutdi! Ular tinch aholiga tenglashdi yoki ustun bo‘ldi."
+    else:
+        return None
 
-def check_win_conditions():
-    mafia = sum(1 for uid in players if roles.get(uid) in ["Mafia", "Don"])
-    civilians = sum(1 for uid in players if roles.get(uid) in ["Oddiy aholi", "Doctor", "Komissar"])
-    if mafia == 0:
-        return "🎉 Tinch aholi yutdi! Mafia qolmadi."
-    elif mafia >= civilians:
-        return "💀 Mafia yutdi! Ular ustunlikka erishdi."
-    return None
+        win_message = check_win_conditions()
+    if win_message:
+        await message.reply(win_message)
 
-
-def reset_game():
-    global players, roles, game_started, voting_active
-    players.clear()
-    roles.clear()
-    game_started = False
-    voting_active = False
-    votes.clear()
-    already_voted.clear()
-
-
-if name == "main":
-    executor.start_polling(dp, skip_updates=True)
+        # O‘yinni tugatamiz
+        global game_started
+        game_started = False
+        players.clear()
+        roles.clear()
