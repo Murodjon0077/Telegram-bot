@@ -209,7 +209,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for game in games.values():
             for user_id in game["players"]:
                                             try:
-                                                await 
+                                                await
 context.bot.send_message(chat_id=user_id, text=f"[Broadcast]: {msg}")
                                             except:
                                                 pass
