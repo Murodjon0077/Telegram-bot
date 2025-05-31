@@ -215,7 +215,7 @@ context.bot.send_message(chat_id=user_id, text=f"[Broadcast]: {msg}")
                                                 pass
                                                 
 context.user_data["broadcast"] = False
-                                                    await 
+                                                    await
 update.message.reply_text("Xabar yuborildi.")
 
 def main():
