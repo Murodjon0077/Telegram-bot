@@ -204,7 +204,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["broadcast"] = True
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("broadcast") and update.effective_user.id == ADMIN_ID:
+    if context.user_data.get("broadcast", False) and update.effective_user.id == ADMIN_ID:
         msg = update.message.text
         for game in games.values():
             for user_id in game["players"]:
