@@ -1,229 +1,232 @@
+import logging
 import random
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import Message
-from aiogram.utils import executor
+from collections import defaultdict, Counter
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ContextTypes, filters
+)
 
-API_TOKEN = "7734532599:AAHJ6VGSjMB4fujTSSUq-P6IuVkRpEXfDy4"
+logging.basicConfig(level=logging.INFO)
 
-bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot)
+TOKEN = "7734532599:AAHJ6VGSjMB4fujTSSUq-P6IuVkRpEXfDy4"
+ADMIN_ID = 488897571
 
-players = []
-roles = {}
-game_started = False
+games = {}  # group_id -> game state
+user_stats = defaultdict(lambda: {'wins': 0, 'losses': 0})
+user_game_map = {}  # user_id -> group_id for PM actions
 
-@dp.message_handler(commands=["start"])
-async def start_handler(message: Message):
-    await message.reply("Salom! Mafia o'yiniga xush kelibsiz. /join orqali o'yinga qo‘shiling.")
+ROLES = ["Mafia", "Komissar Katanik", "Doctor", "Villager"]
 
-@dp.message_handler(commands=["join"])
-async def join_handler(message: Message):
-    global game_started
-    user_id = message.from_user.id
-    if game_started:
-        await message.reply("O'yin allaqachon boshlangan.")
+def get_admin_panel():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Statistikani tozalash", callback_data="reset_stats")],
+        [InlineKeyboardButton("Broadcast", callback_data="broadcast")]
+    ])
+
+def assign_roles(players):
+    roles = ["Mafia", "Komissar Katanik", "Doctor"]
+    while len(roles) < len(players):
+        roles.append("Villager")
+    random.shuffle(roles)
+    return dict(zip(players, roles))
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Mafia botga xush kelibsiz!")
+
+async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if chat_id in games:
+        await update.message.reply_text("O'yin allaqachon boshlangan.")
         return
-    if user_id not in players:
-        players.append(user_id)
-        await message.reply("Siz o'yinga qo‘shildingiz.")
-    else:
-        await message.reply("Siz allaqachon ro'yxatda bor ekansiz.")
 
-@dp.message_handler(commands=["startgame"])
-async def start_game(message: Message):
-    global game_started
-    if game_started:
-        await message.reply("O'yin allaqachon boshlangan.")
-        return
-    if len(players) < 5:
-        await message.reply("O'yin boshlash uchun kamida 5 o'yinchi kerak.")
+    members = [member.user for member in await context.bot.get_chat_administrators(chat_id)]
+    players = [m.id for m in members if not m.is_bot]
+    if len(players) < 4:
+        await update.message.reply_text("O'yin uchun kamida 4 ta o'yinchi kerak.")
         return
 
-    game_started = True
-    random.shuffle(players)
+    roles = assign_roles(players)
+    game = {
+        "players": roles,
+        "alive": set(players),
+        "phase": "night",
+        "votes": {},
+        "chat_id": chat_id,
+        "night_actions": {},
+    }
+    games[chat_id] = game
 
-    total_players = len(players)
-    mafia_count = max(1, (total_players - 4) // 3)
-
-    assigned_roles = ["Don", "Komissar", "Doctor"] + ["Mafia"] * mafia_count
-    remaining = total_players - len(assigned_roles)
-    assigned_roles += ["Oddiy aholi"] * remaining
-    random.shuffle(assigned_roles)
-
-    for user_id, role in zip(players, assigned_roles):
-        roles[user_id] = role
+    for uid, role in roles.items():
+        user_game_map[uid] = chat_id
         try:
-            await bot.send_message(user_id, f"Sizning rolingiz: {role}")
+            await context.bot.send_message(uid, f"Sizning rolingiz: {role}")
         except:
-            await message.reply(f"⚠️ Foydalanuvchiga xabar yuborib bo‘lmadi: {user_id}")
+            pass
 
-    await message.reply("🎮 O'yin boshlandi! Rollar shaxsiy xabarda yuborildi.")
+    await update.message.reply_text("O'yin boshlandi! Rollar yuborildi. Tunda rollar PM orqali harakat qilsin.")
+    await context.bot.send_message(chat_id, "TUN boshlandi. Har bir rol egasi PM orqali o'z harakatini yuborsin.")
 
-    from aiogram.dispatcher.filters import Text
-
-night_actions = {
-    "mafia_target": None,
-    "doctor_save": None,
-    "commissar_check": None
-}
-
-@dp.message_handler(commands=["night"])
-async def start_night(message: Message):
-    if not game_started:
-        await message.reply("O'yin hali boshlanmagan.")
+async def handle_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id not in user_game_map:
+        await update.message.reply_text("Siz hech qaysi o'yinda qatnashmayapsiz.")
         return
 
-    await message.reply("🌙 Tungi bosqich boshlandi. Rollarga shaxsiy xabar yuborildi.")
-
-    for user_id in players:
-        role = roles.get(user_id)
-        if role in ["Mafia", "Don"]:
-            await bot.send_message(user_id, "Mafia, kimni o'ldirmoqchisiz? Foydalanuvchi ID ni yuboring:")
-        elif role == "Doctor":
-            await bot.send_message(user_id, "Doctor, kimni davolamoqchisiz? Foydalanuvchi ID ni yuboring:")
-        elif role == "Komissar":
-            await bot.send_message(user_id, "Komissar, kimni tekshirmoqchisiz? Foydalanuvchi ID ni yuboring:")
-
-@dp.message_handler(lambda message: str(message.from_user.id) in roles)
-async def handle_night_action(message: Message):
-    user_id = message.from_user.id
-    role = roles.get(user_id)
-
-    target_id = message.text.strip()
-    if target_id not in [str(p) for p in players]:
-        await message.reply("❌ Bu foydalanuvchi o'yinda yo'q.")
+    chat_id = user_game_map[user_id]
+    game = games.get(chat_id)
+    if not game or game['phase'] != "night" or user_id not in game["alive"]:
+        await update.message.reply_text("Siz hozir harakat qila olmaysiz.")
         return
 
-    if role in ["Mafia", "Don"]:
-        night_actions["mafia_target"] = int(target_id)
-        await message.reply("✅ Mafia tanlovi qabul qilindi.")
-    elif role == "Doctor":
-        night_actions["doctor_save"] = int(target_id)
-        await message.reply("✅ Doctor tanlovi qabul qilindi.")
-    elif role == "Komissar":
-        night_actions["commissar_check"] = int(target_id)
-        check_role = roles.get(int(target_id))
-        if check_role in ["Mafia", "Don"]:
-            await message.reply("🔍 Tekshiruv natijasi: Bu odam MAFIA!")
-        else:
-            await message.reply("🔍 Tekshiruv natijasi: Bu odam mafia emas.")
+    target_text = update.message.text.strip()
+    try:
+        target_id = int(target_text)
+    except:
+        await update.message.reply_text("Foydalanuvchi ID ni yuboring (raqam ko'rinishida).")
+        return
 
-@dp.message_handler(commands=["morning"])
-async def morning_phase(message: Message):
-    killed = night_actions["mafia_target"]
-    saved = night_actions["doctor_save"]
+    if target_id not in game["alive"]:
+        await update.message.reply_text("Bu foydalanuvchi o'yinda mavjud emas.")
+        return
 
-    if killed == saved:
-        result = "🌤 Tinch tun edi. Hech kim o‘lmadi."
+    role = game["players"][user_id]
+    game["night_actions"][user_id] = (role, target_id)
+    await update.message.reply_text("Harakatingiz qabul qilindi.")
+
+async def resolve_night(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    game = games[chat_id]
+    actions = game["night_actions"]
+    mafia_target = None
+    kill_blocked = False
+
+    for uid, (role, target) in actions.items():
+        if role == "Mafia":
+            mafia_target = target
+        elif role == "Komissar Katanik":
+            role_target = game["players"].get(target, "Noma'lum")
+            try:
+                await context.bot.send_message(uid, f"{target} roli: {role_target}")
+            except:
+                pass
+        elif role == "Doctor" and mafia_target == target:
+            kill_blocked = True
+
+    msg = ""
+    if mafia_target and not kill_blocked:
+        game["alive"].remove(mafia_target)
+        msg = f"{mafia_target} o'ldirildi!"
     else:
-        if killed in players:
-            players.remove(killed)
-            result = f"☠️ {killed} foydalanuvchi o‘ldirildi."
-        else:
-            result = "❓ O‘ldirilgan foydalanuvchi topilmadi."
+        msg = "Hech kim o'lmedi."
 
-    # tozalash
-    night_actions["mafia_target"] = None
-    night_actions["doctor_save"] = None
-    night_actions["commissar_check"] = None
+    game["night_actions"] = {}
+    game["phase"] = "day"
+    await context.bot.send_message(chat_id, f"TUN yakunlandi. {msg}")
+    await context.bot.send_message(chat_id, "KUN boshlandi. Kimni o'ldiramiz? /vote [user_id]")
 
-    await message.reply(result)
+    check_winner(context, chat_id)
 
-    from collections import defaultdict
-
-voting_active = False
-votes = defaultdict(int)
-already_voted = set()
-
-@dp.message_handler(commands=["day"])
-async def start_day(message: Message):
-    global voting_active, votes, already_voted
-    if not game_started:
-        await message.reply("O'yin hali boshlanmagan.")
-        return
-
-    voting_active = True
-    votes.clear()
-    already_voted.clear()
-
-    player_list = "\n".join([f"{i+1}. ID: {p}" for i, p in enumerate(players)])
-    await message.reply(f"🌞 Kunduzi bosqich boshlandi.\nQuyidagi o‘yinchilardan biriga ovoz bering:\n{player_list}\n\nOvoz berish uchun: /vote FOYDALANUVCHI_ID")
-
-@dp.message_handler(commands=["vote"])
-async def vote_handler(message: Message):
-    global voting_active
-
-    if not voting_active:
-        await message.reply("⛔ Hozir ovoz berish bosqichi emas.")
-        return
-
-    voter = message.from_user.id
-    if voter not in players:
-        await message.reply("❌ Siz o‘yinda emassiz.")
-        return
-
-    if voter in already_voted:
-        await message.reply("✅ Siz allaqachon ovoz bergansiz.")
+async def vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    game = games.get(chat_id)
+    if not game or game['phase'] != "day":
+        await update.message.reply_text("Hozir ovoz berish vaqti emas.")
         return
 
     try:
-        target_id = int(message.get_args().strip())
+        target = int(context.args[0])
     except:
-        await message.reply("⚠️ Noto‘g‘ri format. Foydalanuvchi ID ni yozing. Masalan: /vote 123456789")
+        await update.message.reply_text("Foydalanuvchi ID ni kiriting.")
         return
 
-    if target_id not in players:
-        await message.reply("🔍 Bunday o‘yinchi topilmadi.")
+    voter = update.effective_user.id
+    if voter not in game["alive"] or target not in game["alive"]:
+        await update.message.reply_text("Bu o'yinchilar hozir tirik emas.")
         return
 
-    votes[target_id] += 1
-    already_voted.add(voter)
-    await message.reply(f"Ovoz berildi. Siz {target_id} foydalanuvchiga ovoz berdingiz.")
+    game["votes"][voter] = target
+    await update.message.reply_text(f"Ovoz {target} ga berildi.")
 
-@dp.message_handler(commands=["voteresult"])
-async def vote_result(message: Message):
-    global voting_active
-    if not voting_active:
-        await message.reply("⛔ Ovoz berish yoqilmagan.")
-        return
+    if len(game["votes"]) >= len(game["alive"]):
+        counts = Counter(game["votes"].values())
+        most_voted = counts.most_common(1)[0][0]
+        game["alive"].remove(most_voted)
+        await context.bot.send_message(chat_id, f"{most_voted} ovoz bilan o'ldirildi.")
+        game["votes"] = {}
+        game["phase"] = "night"
+        await context.bot.send_message(chat_id, "TUN boshlandi. PM orqali harakatlar.")
+        await resolve_night(context, chat_id)
 
-    if not votes:
-        await message.reply("🚫 Hech kimga ovoz berilmagan.")
-        return
-
-    # Eng ko‘p ovoz olganini topamiz
-    max_votes = max(votes.values())
-    top_candidates = [uid for uid, count in votes.items() if count == max_votes]
-
-    if len(top_candidates) == 1:
-        eliminated = top_candidates[0]
-        players.remove(eliminated)
-        role_eliminated = roles.get(eliminated, "Noma'lum")
-        await message.reply(f"⚖️ Ovoz natijasi: {eliminated} foydalanuvchi (rol: {role_eliminated}) o‘ldirildi.")
-    else:
-        await message.reply("🤷‍♂️ Ovozlar teng bo‘ldi. Hech kim o‘lmadi.")
-
-    voting_active = False
-    votes.clear()
-    already_voted.clear()
-
-    def check_win_conditions():
-    mafia_count = sum(1 for uid in players if roles.get(uid) in ["Mafia", "Don"])
-    civilian_count = sum(1 for uid in players if roles.get(uid) in ["Oddiy aholi", "Komissar", "Doctor"])
+def check_winner(context, chat_id):
+    game = games[chat_id]
+    roles = [game["players"][uid] for uid in game["alive"]]
+    mafia_count = roles.count("Mafia")
+    others = len(roles) - mafia_count
 
     if mafia_count == 0:
-        return "🎉 Tinch aholi yutdi! Barcha mafiya yo‘q qilindi."
-    elif mafia_count >= civilian_count:
-        return "💀 Mafia yutdi! Ular tinch aholiga tenglashdi yoki ustun bo‘ldi."
+        winners = [uid for uid, role in game["players"].items() if role != "Mafia"]
+        for uid in winners:
+            user_stats[uid]["wins"] += 1
+        for uid in game["players"]:
+            if uid not in winners:
+                user_stats[uid]["losses"] += 1
+        context.bot.send_message(chat_id, "TINCH AHOLI g'alaba qozondi!")
+        games.pop(chat_id, None)
+    elif mafia_count >= others:
+        winners = [uid for uid, role in game["players"].items() if role == "Mafia"]
+        for uid in winners:
+            user_stats[uid]["wins"] += 1
+        for uid in game["players"]:
+            if uid not in winners:
+                user_stats[uid]["losses"] += 1
+        context.bot.send_message(chat_id, "MAFIYA g'alaba qozondi!")
+        games.pop(chat_id, None)
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    s = user_stats[uid]
+    await update.message.reply_text(f"Sizda {s['wins']} g'alaba, {s['losses']} mag'lubiyat bor.")
+
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_ID:
+        await update.message.reply_text("Admin panel:", reply_markup=get_admin_panel())
     else:
-        return None
+        await update.message.reply_text("Siz admin emassiz.")
 
-        win_message = check_win_conditions()
-    if win_message:
-        await message.reply(win_message)
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "reset_stats":
+        user_stats.clear()
+        await query.edit_message_text("Statistikalar tozalandi.")
+    elif query.data == "broadcast":
+        await query.edit_message_text("Xabar matnini yuboring:")
+        context.user_data["broadcast"] = True
 
-        # O‘yinni tugatamiz
-        global game_started
-        game_started = False
-        players.clear()
-        roles.clear()
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("broadcast") and update.effective_user.id == ADMIN_ID:
+        msg = update.message.text
+        for game in games.values():
+            for user_id in game["players"]:
+            try:
+                    await context.bot.send_message(chat_id=user_id, text=f"[Broadcast]: {msg}")
+                except:
+                    pass
+        context.user_data["broadcast"] = False
+        await update.message.reply_text("Xabar yuborildi.")
+
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("startgame", start_game))
+    app.add_handler(CommandHandler("vote", vote))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("admin", admin))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT, handle_pm))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    print("Bot ishga tushdi...")
+    app.run_polling()
+
+if name == "main":
+    main()
