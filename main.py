@@ -209,11 +209,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for game in games.values():
             for user_id in game["players"]:
                                             try:
-                                                await context.bot.send_message(chat_id=user_id, text=f"[Broadcast]: {msg}")
+                                                await 
+context.bot.send_message(chat_id=user_id, text=f"[Broadcast]: {msg}")
                                             except:
                                                 pass
-                                        context.user_data["broadcast"] = False
-                                        await update.message.reply_text("Xabar yuborildi.")
+                                                
+context.user_data["broadcast"] = False
+                                                    await 
+update.message.reply_text("Xabar yuborildi.")
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
